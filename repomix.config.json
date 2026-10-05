@@ -1,0 +1,9 @@
+{
+  "output": {
+    "style": "markdown",
+    "filePath": "repomix-output-laravel.md",
+    "removeComments": false,
+    "removeEmptyLines": true,
+    "showLineNumbers": false
+  }
+}

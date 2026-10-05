@@ -1,0 +1,106 @@
+name: laravel-app
+
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL:-hi@example.com}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--api.insecure=${TRAEFIK_API_INSECURE:-false}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./letsencrypt:/letsencrypt"
+    networks:
+      - main-network
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: laravel-app:latest
+    container_name: app
+    env_file: ./.env
+    environment:
+      DB_HOST: db
+      REDIS_HOST: valkey
+    # No `./:/app` bind mount: it would clobber the vendor/ built into
+    # the image. Only storage/ is persisted, as a named volume.
+    volumes:
+      - app_storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    networks:
+      - main-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/up >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    labels:
+      - "traefik.enable=true"
+      # DOMAIN in .env IS the full Traefik matcher. Use it verbatim; do
+      # NOT wrap it in Host(...) here — that nests matchers and Traefik
+      # rejects the rule.
+      - "traefik.http.routers.app.rule=${DOMAIN}"
+      - "traefik.http.routers.app.entrypoints=${ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.app.tls=${TLS_ENABLED:-true}"
+      - "traefik.http.routers.app.tls.certresolver=${CERT_RESOLVER:-myresolver}"
+      - "traefik.http.services.app.loadbalancer.server.port=8000"
+
+  db:
+    image: postgres:15-alpine
+    container_name: db
+    env_file: ./.env
+    # DB_USERNAME (not DB_USER) so it matches Laravel's config/database.php.
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - main-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:7-alpine
+    container_name: valkey
+    env_file: ./.env
+    command: valkey-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    networks:
+      - main-network
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  main-network:
+    name: main-network
+    driver: bridge
+
+volumes:
+  db_data:
+  app_storage:
