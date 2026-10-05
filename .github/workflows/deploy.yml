@@ -1,0 +1,69 @@
+name: Deploy to prod
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Never let two deploys overlap; queue the newer one.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute remote command via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT }}
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.PROJECT_PATH }}"
+
+            echo "==> Fetching latest main"
+            git fetch --prune origin main
+            git reset --hard origin/main
+
+            # Root .env is needed for compose ${VAR} interpolation in labels
+            # and command lines. Compose would auto-load ./.env anyway, but
+            # sourcing it explicitly also covers any `docker compose` calls
+            # made from a different working dir.
+            echo "==> Loading .env for compose interpolation"
+            set -a; . ./.env; set +a
+
+            # Build first, separately. Docker layer cache means unchanged
+            # Dockerfiles / contexts reuse existing layers. Only the service
+            # whose files actually changed gets a new image ID.
+            echo "==> Building changed images only"
+            docker compose --profile prod build
+
+            # No --force-recreate. Compose compares the desired config
+            # (image ID + compose file) against each running container and
+            # recreates ONLY the ones whose image or config changed.
+            # --remove-orphans cleans up services deleted from the compose file.
+            echo "==> Applying changes (only changed services are recreated)"
+            docker compose --profile prod up -d --remove-orphans
+
+            # Bounded health wait. Catches both "starting" (healthcheck
+            # not yet passed) and "restarting" (crash-looping), and gives
+            # up after 5 minutes instead of hanging the runner.
+            echo "==> Waiting for services to become healthy"
+            timeout 300 sh -c '
+              while true; do
+                bad=$(docker compose --profile prod ps --format json 2>/dev/null \
+                      | grep -c "\"Health\":\"starting\"\|\"State\":\"restarting\"" || true)
+                [ "$bad" = "0" ] && break
+                sleep 5
+              done
+            '
+
+            echo "==> Current state"
+            docker compose --profile prod ps
+            docker compose --profile prod logs --tail=100 --no-color
