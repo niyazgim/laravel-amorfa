@@ -1,20 +1,45 @@
 # syntax=docker/dockerfile:1.7
 
-# FrankenPHP bundles Caddy + PHP-FPM in one binary, so the app ships as
-# a single container. No nginx, no supervisor, no process manager.
-#
-# PHP 8.4 (not 8.3): config/database.php references Pdo\Mysql, which only
-# exists on 8.4+. Pinning 8.4 removes the version drift landmine.
-FROM dunglas/frankenphp:1-php8.4-alpine
+# ── Stage 1: Composer vendor stage ────────────────────────────────
+# Official Composer image resolves all PHP dependencies.
+# Nothing about Composer lives in the runtime image.
+FROM composer:2 AS vendor
 
-# ca-certificates — Alpine ships without a CA bundle, so HTTPS to
-#                   packagist fails TLS verification.
-# git, unzip      — composer clones and extracts dist archives.
-# postgresql-client — provides pg_isready for the entrypoint wait loop.
+WORKDIR /app
+
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_NO_INTERACTION=1 \
+    COMPOSER_MEMORY_LIMIT=-1
+
+# Layer-cache deps separately from code.
+COPY composer.json composer.lock* ./
+
+RUN set -eux \
+    && composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-progress \
+    || composer update --no-dev --no-scripts --no-autoloader --prefer-dist --no-progress
+
+# Copy source and dump the optimized autoloader inside this stage.
+# --no-scripts: artisan is not runnable during build (no .env yet).
+COPY ./ /app/
+
+RUN composer dump-autoload --optimize --no-dev --no-scripts
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────
+# FrankenPHP bundles Caddy + PHP-FPM in one binary — single container.
+# PHP 8.4: config/database.php references Pdo\Mysql (8.4+ only).
+FROM dunglas/frankenphp:1-php8.4-alpine AS runtime
+
+# CA certs for HTTPS; git/unzip for in-container composer runs.
+# postgresql-client provides pg_isready for the entrypoint wait loop.
 RUN apk add --no-cache ca-certificates git unzip postgresql-client
 
-# install-php-extensions is shipped by the FrankenPHP base image.
-# `@composer` is a special alias that installs the Composer binary.
+# Pull Composer from the official image — same pattern as the guide.
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+
+# Official php extension installer — no Alpine package drift.
+COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
+
+# @composer is NOT here — Composer comes from the composer:2 image above.
 RUN install-php-extensions \
         bcmath \
         ctype \
@@ -34,10 +59,9 @@ RUN install-php-extensions \
         redis \
         tokenizer \
         xml \
-        zip \
-        @composer
+        zip
 
-# php.ini overrides — inlined so the whole stack is exactly two files.
+# php.ini overrides — production-oriented defaults.
 COPY <<'PHPINI' /usr/local/etc/php/conf.d/99-app.ini
 memory_limit = 256M
 upload_max_filesize = 32M
@@ -47,7 +71,7 @@ max_input_time = 60
 
 opcache.enable = 1
 opcache.enable_cli = 0
-opcache.validate_timestamps = 1
+opcache.validate_timestamps = 0
 opcache.revalidate_freq = 0
 opcache.memory_consumption = 128
 opcache.max_accelerated_files = 10000
@@ -64,22 +88,11 @@ ENV COMPOSER_ALLOW_SUPERUSER=1 \
     COMPOSER_NO_INTERACTION=1 \
     COMPOSER_MEMORY_LIMIT=-1
 
-# Deps first so this layer caches across code edits.
-# `composer.lock*` keeps the COPY valid on a fresh checkout with no lock.
-# If the lock is stale, install exits 2 and we fall back to update.
-COPY composer.json composer.lock* ./
-RUN set -eux \
-    && composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-progress \
-    || composer update --no-dev --no-scripts --no-autoloader --prefer-dist --no-progress
+# Take the whole resolved app (source + vendor) from the vendor stage.
+COPY --from=vendor /app /app
 
-# Application code.
-COPY ./ /app/
-
-# Optimized autoloader + writable runtime dirs. The mkdir is defensive:
-# storage/framework/* subdirs are gitignored, so they may be absent on a
-# fresh checkout even though .gitignore keeps the parents around.
-RUN composer dump-autoload --optimize --no-dev \
-    && mkdir -p \
+# Writable runtime dirs.
+RUN mkdir -p \
         storage/framework/cache/data \
         storage/framework/sessions \
         storage/framework/testing \
@@ -88,9 +101,7 @@ RUN composer dump-autoload --optimize --no-dev \
         bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache
 
-# Entrypoint: key bootstrap, DB wait, migrations, then exec CMD.
-# Migrations run only when the web server is the CMD, so one-off
-# `docker compose run app php artisan ...` invocations stay fast.
+# Entrypoint: key guard, permissions fix, DB wait, migrations.
 RUN cat > /usr/local/bin/entrypoint.sh <<'ENTRYPOINT'
 #!/bin/sh
 set -e
@@ -102,8 +113,7 @@ if [ -z "${APP_KEY:-}" ] || [ "$APP_KEY" = "base64:CHANGE_ME" ]; then
     export APP_KEY
 fi
 
-# The storage volume is remounted on every start; fix ownership so the
-# unprivileged PHP worker can write into it.
+# Fix volume ownership for unprivileged worker execution.
 chown -R www-data:www-data storage bootstrap/cache 2>/dev/null || true
 
 if [ "$1" = "frankenphp" ] || [ "$1" = "php-fpm" ]; then

@@ -1,6 +1,20 @@
 name: laravel-app
-
 services:
+  # One-shot Composer runner. Official composer image, never the runtime.
+  #   docker compose --profile tools run --rm composer install
+  #   docker compose --profile tools run --rm composer require foo/bar
+  composer:
+    image: composer:2
+    profiles: ["tools"]
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      COMPOSER_ALLOW_SUPERUSER: "1"
+      COMPOSER_NO_INTERACTION: "1"
+      COMPOSER_MEMORY_LIMIT: "-1"
+    networks:
+      - main-network
   traefik:
     image: traefik:latest
     container_name: traefik
@@ -22,51 +36,10 @@ services:
     networks:
       - main-network
     restart: unless-stopped
-
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: laravel-app:latest
-    container_name: app
-    env_file: ./.env
-    environment:
-      DB_HOST: db
-      REDIS_HOST: valkey
-    # No `./:/app` bind mount: it would clobber the vendor/ built into
-    # the image. Only storage/ is persisted, as a named volume.
-    volumes:
-      - app_storage:/app/storage
-    depends_on:
-      db:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-    networks:
-      - main-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/up >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
-    labels:
-      - "traefik.enable=true"
-      # DOMAIN in .env IS the full Traefik matcher. Use it verbatim; do
-      # NOT wrap it in Host(...) here — that nests matchers and Traefik
-      # rejects the rule.
-      - "traefik.http.routers.app.rule=${DOMAIN}"
-      - "traefik.http.routers.app.entrypoints=${ENTRYPOINT:-websecure}"
-      - "traefik.http.routers.app.tls=${TLS_ENABLED:-true}"
-      - "traefik.http.routers.app.tls.certresolver=${CERT_RESOLVER:-myresolver}"
-      - "traefik.http.services.app.loadbalancer.server.port=8000"
-
   db:
     image: postgres:15-alpine
     container_name: db
     env_file: ./.env
-    # DB_USERNAME (not DB_USER) so it matches Laravel's config/database.php.
     environment:
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -81,7 +54,6 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-
   valkey:
     image: valkey/valkey:7-alpine
     container_name: valkey
@@ -95,12 +67,10 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-
 networks:
   main-network:
     name: main-network
-    driver: bridge
-
+    external: true
 volumes:
   db_data:
   app_storage:
