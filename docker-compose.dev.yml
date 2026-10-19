@@ -17,7 +17,7 @@ services:
     networks: [traefik]
     restart: unless-stopped
 
-  app:
+  laravel:
     build:
       context: .
       target: development
