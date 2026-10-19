@@ -1,76 +1,32 @@
-name: laravel-app
 services:
-  # One-shot Composer runner. Official composer image, never the runtime.
-  #   docker compose --profile tools run --rm composer install
-  #   docker compose --profile tools run --rm composer require foo/bar
-  composer:
-    image: composer:2
-    profiles: ["tools"]
-    working_dir: /app
-    volumes:
-      - .:/app
-    environment:
-      COMPOSER_ALLOW_SUPERUSER: "1"
-      COMPOSER_NO_INTERACTION: "1"
-      COMPOSER_MEMORY_LIMIT: "-1"
-    networks:
-      - main-network
   traefik:
-    image: traefik:latest
-    container_name: traefik
+    image: traefik:v3.1
     command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
-      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL:-hi@example.com}"
-      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
-      - "--api.insecure=${TRAEFIK_API_INSECURE:-false}"
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --api.dashboard=true
+      - --api.insecure=true
     ports:
       - "80:80"
       - "443:443"
+      - "8080:8080"
     volumes:
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"
-      - "./letsencrypt:/letsencrypt"
-    networks:
-      - main-network
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [traefik]
     restart: unless-stopped
-  db:
-    image: postgres:15-alpine
-    container_name: db
-    env_file: ./.env
-    environment:
-      POSTGRES_USER: ${DB_USERNAME}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_DATABASE}
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    networks:
-      - main-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+
+  app:
+    build: .
     restart: unless-stopped
-  valkey:
-    image: valkey/valkey:7-alpine
-    container_name: valkey
-    env_file: ./.env
-    command: valkey-server --requirepass ${REDIS_PASSWORD} --appendonly yes
-    networks:
-      - main-network
-    healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -q PONG"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.app.rule=Host(`app.localhost`)
+      - traefik.http.routers.app.entrypoints=web
+      - traefik.http.services.app.loadbalancer.server.port=3000
+    networks: [traefik]
+
 networks:
-  main-network:
-    name: main-network
-    external: true
-volumes:
-  db_data:
-  app_storage:
+  traefik:
+    name: traefik

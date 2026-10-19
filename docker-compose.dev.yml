@@ -1,25 +1,51 @@
 services:
+  traefik:
+    image: traefik:v3.1
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --api.dashboard=true
+      - --api.insecure=true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [traefik]
+    restart: unless-stopped
+
   app:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: laravel-app:dev
-    container_name: app_dev
-    env_file: ./.env
+      target: development
+    command: npm run dev
     environment:
-      DB_HOST: db
-      REDIS_HOST: valkey
-      APP_ENV: local
-      APP_DEBUG: "true"
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
     volumes:
-      - .:/app  # Live coding mounts
-      - app_storage:/app/storage
-    depends_on:
-      db:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-    networks:
-      - main-network
-    ports:
-      - "8000:8000"  # Direct access for local testing
+      - ./:/app:cached
+      - /app/node_modules
+    develop:
+      watch:
+        - action: sync
+          path: ./src
+          target: /app/src
+        - action: sync
+          path: ./public
+          target: /app/public
+        - action: rebuild
+          path: package.json
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.app.rule=Host(`app.localhost`)
+      - traefik.http.routers.app.entrypoints=web
+      - traefik.http.services.app.loadbalancer.server.port=3000
+    networks: [traefik]
+
+networks:
+  traefik:
+    name: traefik

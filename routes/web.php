@@ -1,37 +1,44 @@
 <?php
 
+use App\Http\Controllers\ProductController;
+use App\Http\Controllers\RegLogController;
+use App\Http\Middleware\IsAdmin;
 use Illuminate\Support\Facades\Route;
 
+// Уточняем роут, т.е.
+// метод (GET, POST, PUT, PATCH, DELETE, OPTIONS) + путь через слэш '/' (URI)
+// и указываем обработчик (функция либо метод у контроллера)
+// Контроллер (controller) - это сбор функций-обработчиков под одной крышей
 Route::get('/', function () {
-    return view('welcome');
+  return view('pages.welcome');
 });
 
-Route::get('/products', function () {
-    return view('products');
-});
+// Пример синтаксиса:
+// Route::Метод_REST(нужный_нам_URI, [Указатель_на_класс_контроллера, Имя_метода])
+Route::get('/products', [ProductController::class, 'indexPage']);
 
-Route::get('/products/{id}', function () {
-    return view('product.show');
+Route::get('/products/{id}', [ProductController::class, 'showPage']);
+
+Route::middleware('guest')->group(function () {
+  Route::get('/login', [RegLogController::class, 'loginPage'])->name('login');
+  Route::post('/login', [RegLogController::class, 'login']);
+
+  Route::get('/register', [RegLogController::class, 'registerPage']);
+  Route::post('/register', [RegLogController::class, 'register']);
 });
 
 Route::middleware('auth')->group(function () {
-  Route::get('/products/create', function () {
-      return view('product.create');
-  });
+  Route::post('/logout', [RegLogController::class, 'logout']);
+});
 
-  Route::get('/products/{id}/edit', function () {
-      return view('product.edit');
-  });
+Route::middleware(IsAdmin::class)->group(function () {
+  Route::get('/products/create', [ProductController::class, 'createPage']);
 
-  Route::post('/products', function () {
-      return 'test';
-  });
+  Route::get('/products/{id}/edit', [ProductController::class, 'editPage']);
 
-  Route::patch('/products', function () {
-      return 'fixed!';
-  });
+  Route::post('/products', [ProductController::class, 'create']);
 
-  Route::delete('/products', function () {
-      return 'deleted!';
-  });
+  Route::patch('/products',  [ProductController::class, 'edit']);
+
+  Route::delete('/products',  [ProductController::class, 'delete']);
 });
