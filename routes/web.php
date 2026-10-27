@@ -38,7 +38,7 @@ Route::middleware(IsAdmin::class)->group(function () {
 
   Route::post('/products', [ProductController::class, 'create']);
 
-  Route::patch('/products',  [ProductController::class, 'edit']);
+  Route::patch('/products/{id}',  [ProductController::class, 'edit']);
 
-  Route::delete('/products',  [ProductController::class, 'delete']);
+  Route::delete('/products/{id}',  [ProductController::class, 'delete']);
 });

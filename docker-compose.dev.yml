@@ -1,3 +1,5 @@
+name: example-app-dev
+
 services:
   traefik:
     image: traefik:v3.1
@@ -17,35 +19,68 @@ services:
     networks: [traefik]
     restart: unless-stopped
 
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-laravel}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me-in-production}
+      POSTGRES_DB: ${DB_DATABASE:-laravel}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [traefik]
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-in-production}
+    command: ["valkey-server", "--requirepass", "${REDIS_PASSWORD:-change-me-in-production}"]
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [traefik]
+    restart: unless-stopped
+
   laravel:
     build:
       context: .
-      target: development
-    command: npm run dev
+      target: runtime
+    env_file: .env
     environment:
-      NODE_ENV: development
-      CHOKIDAR_USEPOLLING: "true"
-      WATCHPACK_POLLING: "true"
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_URL: http://app.localhost
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
     volumes:
       - ./:/app:cached
-      - /app/node_modules
-    develop:
-      watch:
-        - action: sync
-          path: ./src
-          target: /app/src
-        - action: sync
-          path: ./public
-          target: /app/public
-        - action: rebuild
-          path: package.json
+      - /app/vendor
+      - /app/storage
+      - /app/bootstrap/cache
     labels:
       - traefik.enable=true
       - traefik.http.routers.app.rule=Host(`app.localhost`)
       - traefik.http.routers.app.entrypoints=web
-      - traefik.http.services.app.loadbalancer.server.port=3000
+      - traefik.http.services.app.loadbalancer.server.port=8000
     networks: [traefik]
+    restart: unless-stopped
 
 networks:
   traefik:
     name: traefik
+
+volumes:
+  pgdata:
+  valkeydata:

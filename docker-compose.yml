@@ -1,6 +1,9 @@
+name: example-app
+
 services:
   traefik:
     image: traefik:v3.1
+    profiles: [prod]
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -17,16 +20,60 @@ services:
     networks: [traefik]
     restart: unless-stopped
 
+  db:
+    image: postgres:16-alpine
+    profiles: [prod]
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-laravel}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me-in-production}
+      POSTGRES_DB: ${DB_DATABASE:-laravel}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [traefik]
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    profiles: [prod]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-in-production}
+    command: ["valkey-server", "--requirepass", "${REDIS_PASSWORD:-change-me-in-production}"]
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [traefik]
+    restart: unless-stopped
+
   laravel:
+    profiles: [prod]
     build: .
     restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
     labels:
       - traefik.enable=true
       - traefik.http.routers.app.rule=Host(`app.localhost`)
       - traefik.http.routers.app.entrypoints=web
-      - traefik.http.services.app.loadbalancer.server.port=3000
+      - traefik.http.services.app.loadbalancer.server.port=8000
     networks: [traefik]
 
 networks:
   traefik:
     name: traefik
+
+volumes:
+  pgdata:
+  valkeydata:
